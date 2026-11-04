@@ -1,0 +1,36 @@
+# Entornos virtuales
+.venv/
+venv/
+env/
+ENV/
+
+# Caché y archivos compilados de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Herramientas de pruebas, tipado y cobertura
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Empaquetado y distribución
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Editores e IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Archivos del sistema operativo
+.DS_Store
+Thumbs.db
+Desktop.ini
