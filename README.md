@@ -6,6 +6,7 @@
 - Sara López Cardona
 - Kevin Daniel Mendoza Castillo
 - Pablo Andrés Tabares Cardona
+- Andres Mauricio Agudelo Elorza
 
 ---
 
