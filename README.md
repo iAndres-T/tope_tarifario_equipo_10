@@ -214,3 +214,94 @@ $$T_{\text{regla}}(950.000) \approx 950.000 \times 6,70 \times 10^{-6}\text{ s} 
    - Si tan solo el $15\,\%$ de los usuarios del SITVM ($142.500$ tarjetas intensivas con $m \approx 27$) se procesara con la solución exhaustiva, la corrida tomaría $\approx \mathbf{6.822\text{ horas}}$ ($\approx \mathbf{284\text{ días}}$ ininterrumpidos de servidor). Para tarjetas que viajan más de ~22 días al mes, el volumen real **sencillamente no termina** dentro de la ventana nocturna ni antes del cierre del mes siguiente, explicando por qué el programa actual del SITVM colapsa y debe abortar hacia la regla simplificada.
 
 ---
+
+## 5. Análisis comparativo
+
+### 5.1 Limitación de la regla actual: contraejemplo calculado
+La regla simplificada falla porque toma decisiones locales y cierra bloques sin anticipar los viajes de los días siguientes. Considere la siguiente instancia de **10 días** (cuyo resultado es idéntico si se completa con 20 días sin viajes hasta cerrar un mes de 30 días):
+
+$$\text{viajes\_por\_dia} = [1,\; 1,\; 1,\; 3,\; 3,\; 3,\; 3,\; 3,\; 3,\; 3]$$
+
+- **Cálculo con la regla actual (`costo_regla_actual`):**
+  1. Costo diario individual $\min(3.900 \cdot v_t,\; 9.500)$: días 1, 2 y 3 cuestan $3.900$ pesos cada uno; días 4 al 10 tienen 3 viajes ($11.700 > 9.500$), por lo que aplican pase diario a $9.500$ pesos cada uno.
+  2. Primer bloque semanal (días 1 al 7): suma $3 \times 3.900 + 4 \times 9.500 = 11.700 + 38.000 = 49.700$ pesos. Como supera $36.000$, la regla aplica el pase semanal en los días 1 al 7 y cobra **36.000 pesos**, desperdiciando tres días del pase semanal en días baratos de un solo viaje.
+  3. Segundo bloque semanal (días 8 al 10): suma $3 \times 9.500 = 28.500$ pesos. Como no supera $36.000$, cobra **28.500 pesos**.
+  4. Total mensual: $36.000 + 28.500 =$ **64.500 pesos** (no supera el mensual de $135.000$).
+- **Cálculo óptimo (`costo_minimo` y `costo_exhaustivo`):**
+  1. Días 1, 2 y 3: se cubren con 3 pasajes sencillos = $3 \times 3.900 =$ **11.700 pesos**.
+  2. Día 4: se adquiere un único **pase semanal** que cubre los 7 días consecutivos de alta demanda (días 4 al 10) = **36.000 pesos**.
+  3. Total óptimo: $11.700 + 36.000 =$ **47.700 pesos**.
+- **Diferencia (sobrecobro al usuario):** $64.500 - 47.700 =$ **16.800 pesos cobrados de más** (es decir, 16.800 pesos de devolución que el usuario pierde injustamente). Nótese además que incluso si una regla voraz activara el pase semanal apenas el acumulado corrido superara 36.000 pesos (lo cual ocurre el día 7), cometería exactamente el mismo error y cobraría los mismos 64.500 pesos. En meses de 31 días ocurre un desfase análogo con el pase mensual: en `[1] + [4]*30`, la regla cobra $135.000 + 9.500 = 144.500$ pesos frente al óptimo de $3.900 + 135.000 = 138.900$ pesos (**5.600 pesos de más**).
+
+### 5.2 La condición contraria: ¿qué tendría que cambiar para que una estrategia voraz fuera óptima?
+Una estrategia voraz sería óptima y no haría falta programación dinámica si cambiara cualquiera de estas dos reglas del negocio:
+1. **Ausencia de pases multidiarios:** si el catálogo tarifario solo ofreciera pasaje sencillo (3.900 pesos) y pase diario (9.500 pesos), eliminando los pases semanal y mensual, la compra de un día no cubriría ningún día posterior. Las decisiones diarias serían independientes entre sí y elegir cada día $\min(3.900 \cdot v_t,\; 9.500)$ cumpliría la propiedad de elección voraz sin necesidad de reconsiderar días pasados.
+2. **Pases restringidos a bloques calendario fijos y disjuntos:** si las condiciones comerciales definieran el pase semanal exclusivamente para semanas fijas del calendario (días 1–7, 8–14, 15–21, 22–28) y el pase mensual para la totalidad fija del mes (días 1 al $d$), ningún pase podría desplazarse ni solapar fronteras entre semanas; entonces aplicar vorazmente el mínimo por día, luego por semana fija y luego por el mes completo produciría siempre el óptimo exacto. Precisamente porque los pases reales cubren *cualquier* ventana de 7 o 30 días consecutivos es indispensable la programación dinámica.
+
+### 5.3 Recomendación técnica para el SITVM
+Recomendamos a la Gerencia de Tecnología **adoptar la estrategia de programación dinámica por tabulación (`costo_minimo` y `liquidar_tope`)** para reemplazar tanto la exploración exhaustiva como la regla simplificada de respaldo:
+- **Ganancias frente al esquema actual:**
+  1. **Cumplimiento estricto del negocio y fin de las quejas:** garantiza devoluciones exactas al peso para el 100 % de las tarjetas personalizadas (eliminando sobrecobros que en datos sintéticos perjudican a más del 31 % de los usuarios).
+  2. **Velocidad equivalente a la regla simplificada:** liquida las 950.000 tarjetas del mes en ~7,7 segundos (frente a ~4,6 segundos de la regla errónea y frente al colapso de horas/meses de la búsqueda exhaustiva), eliminando las semanas de retraso en la acreditación de saldos.
+- **Riesgos y límites que la organización debe conocer:**
+  1. **Crecimiento del volumen de tarjetas:** ante una expansión del 30 % en tarjetas activas (~1.235.000 tarjetas), el tiempo de `costo_minimo` subiría linealmente de ~7,7 s a ~10,0 s, manteniendo intacta la viabilidad dentro de las 4 horas; sin embargo, esta función recibe `viajes_por_dia` ya consolidado por tarjeta, de modo que la preparación previa de los conteos diarios desde el archivo crudo de validaciones debe escalar igualmente en tiempo lineal o casi lineal para no trasladar allí el cuello de botella.
+  2. **Cambios en la estructura tarifaria:** como la complejidad exacta es $\Theta(d \cdot k)$, si en el futuro se introdujeran decenas de pases nuevos ($k$ grande) la constante crecería proporcionalmente a $k$; y si se crearan pases que no cubran días calendario completos sino bolsas de horas, zonas o transbordos acumulados, el estado ya no sería solo el día $t$ y habría que ampliar la dimensión de la tabla.
+  3. **Definición comercial entre meses consecutivos:** tecnología y recaudo deben dejar estipulado contractualmente que el tope se liquida por mes calendario cerrado (o, si algún día se permitiera que un pase de 30 días comprado el día 20 cubra hasta el día 19 del mes siguiente, persistir como estado inicial del nuevo mes los días ya cubiertos por cada tarjeta).
+
+---
+
+## 6. Implicaciones éticas, sociales y ambientales
+
+### 6.1 Consumo energético
+Con la potencia informada por el cliente para el servidor dedicado bajo carga sostenida ($P = 500\text{ W} = 0,5\text{ kW}$) y la relación $E\text{ (kWh)} = P\text{ (kW)} \times t\text{ (h)}$, presentamos las **estimaciones** de consumo eléctrico para liquidar las 950.000 tarjetas mensuales y su proyección a un año de operación (12 cierres de mes):
+
+| Escenario evaluado (950.000 tarjetas/mes) | Tiempo estimado por cierre | Energía por cierre mensual (kWh) | Proyección anual — 12 cierres (kWh/año) | Viabilidad operativa y financiera |
+| :--- | :---: | :---: | :---: | :--- |
+| **Estrategia propuesta (Programación dinámica)** | 7,73 s (0,00215 h) | **0,00107 kWh** (1,07 Wh) | **0,01289 kWh/año** (12,9 Wh/año) | Viable y óptima (100 % exacta). |
+| **Regla simplificada aislada (`regla_actual`)** | 4,58 s (0,00127 h) | **0,00064 kWh** (0,64 Wh) | **0,00763 kWh/año** (7,6 Wh/año) | Inviable por negocio (sobrecobra a >31 % de tarjetas). |
+| **Proceso híbrido actual del SITVM** *(exhaustiva hasta agotar ventana >4 h de desborde + regla simplificada)* | > 4,0 h de desborde nocturno | **> 2,00 kWh** | **> 24,00 kWh/año** | Desborda la ventana nocturna y genera sobrecobros. |
+| **Búsqueda exhaustiva pura** *(estimada solo sobre el 15 % de tarjetas intensivas, $m \approx 27$)* | ~6.821,7 h (~284 días) | **~3.410,9 kWh** | **~40.930,8 kWh/año** | Computacionalmente inviable (no termina). |
+
+**Análisis de la diferencia anual:**
+1. **Regla simplificada frente a programación dinámica:** comparar directamente las dos rutinas $\Theta(d)$ arroja una diferencia de apenas $0,01289 - 0,00763 =$ **+0,00526 kWh al año** (5,26 Wh anuales, equivalente a mantener encendido el servidor apenas **38 segundos adicionales en todo el año**). Esto demuestra empíricamente que devolverle hasta el último peso exacto a los pasajeros no conlleva penalización energética relevante frente a la heurística actual.
+2. **Proceso actual real del SITVM frente a programación dinámica:** dado que hoy la organización sí intenta correr la exploración exhaustiva antes de caer en la regla simplificada —contribuyendo a que el lote nocturno supere las 8 horas (al menos 4 horas por encima de la ventana en el cierre de mes)—, sustituir ese esquema por programación dinámica reduce el consumo anual desde más de **24 kWh/año** (e incluso miles de kWh si se intentara completar la exhaustiva sin corte) a **0,013 kWh/año**, logrando un **ahorro superior al 99,9 %** de la energía consumida hoy en el cierre mensual.
+
+---
+
+## 7. Conclusiones
+
+1. La liquidación del tope tarifario del SITVM posee subestructura óptima y subproblemas traslapados sobre los días del periodo, lo que permite sustituir un árbol recursivo exponencial $\Theta(d + r^m)$ ($r \approx 2,0066$) por tabulación en tiempo $\Theta(d)$ sin sacrificar exactitud.
+2. La regla simplificada vigente falla siempre que convenga desplazar el inicio de un pase semanal o mensual fuera de cortes fijos (como se demostró con el sobrecobro de 16.800 pesos en `[1, 1, 1, 3, 3, 3, 3, 3, 3, 3]` y con el 31,4 % a 37,7 % de tarjetas afectadas en pruebas sintéticas).
+3. En el volumen real de 950.000 tarjetas mensuales, la programación dinámica resuelve el cierre en ~7,73 segundos (0,054 % de la ventana de 4 horas) con un gasto energético estimado de apenas 0,0129 kWh al año en el servidor de 500 W, frente a la inviabilidad operativa y energética de la búsqueda exhaustiva.
+
+---
+
+## 8. Reproducción de pruebas y experimentos
+
+Siga estos pasos desde la raíz del repositorio para configurar el entorno virtual, ejecutar la verificación completa con `assert` y regenerar las mediciones junto con las gráficas en `graficas/tope_tarifario/`:
+
+### En Windows (PowerShell)
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+
+# 1. Ejecutar suite de pruebas
+python src/tope_tarifario/pruebas.py
+
+# 2. Ejecutar experimentos y generar graficas
+python src/tope_tarifario/medicion.py
+```
+
+### En Linux / macOS
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# 1. Ejecutar suite de pruebas
+python3 src/tope_tarifario/pruebas.py
+
+# 2. Ejecutar experimentos y generar graficas
+python3 src/tope_tarifario/medicion.py
+```
