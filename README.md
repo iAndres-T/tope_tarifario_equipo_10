@@ -220,7 +220,7 @@ $$T_{\text{regla}}(950.000) \approx 950.000 \times 6,70 \times 10^{-6}\text{ s} 
 ### 5.1 Limitación de la regla actual: contraejemplo calculado
 La regla simplificada falla porque toma decisiones locales y cierra bloques sin anticipar los viajes de los días siguientes. Considere la siguiente instancia de **10 días** (cuyo resultado es idéntico si se completa con 20 días sin viajes hasta cerrar un mes de 30 días):
 
-$$\text{viajes\_por\_dia} = [1,\; 1,\; 1,\; 3,\; 3,\; 3,\; 3,\; 3,\; 3,\; 3]$$
+$$\text{viajes por dia} = [1,\; 1,\; 1,\; 3,\; 3,\; 3,\; 3,\; 3,\; 3,\; 3]$$
 
 - **Cálculo con la regla actual (`costo_regla_actual`):**
   1. Costo diario individual $\min(3.900 \cdot v_t,\; 9.500)$: días 1, 2 y 3 cuestan $3.900$ pesos cada uno; días 4 al 10 tienen 3 viajes ($11.700 > 9.500$), por lo que aplican pase diario a $9.500$ pesos cada uno.
