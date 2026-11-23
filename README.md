@@ -305,3 +305,262 @@ python3 src/tope_tarifario/pruebas.py
 # 2. Ejecutar experimentos y generar graficas
 python3 src/tope_tarifario/medicion.py
 ```
+
+---
+
+# Segunda parte — Proyecto Final: Operación 3 (Detección de las franjas de congestión) y Evaluación Integral del Caso 1
+
+## 9. Análisis del problema (Complemento del proceso nocturno y Operación 3)
+
+### 9.1 Caracterización de las cuatro operaciones críticas del proceso nocturno del SITVM
+Complementando el análisis de la **Operación 4 (Liquidación del tope tarifario)** desarrollado en la Primera Parte (Sección 1), a continuación se caracteriza el proceso nocturno completo del SITVM y sus cuatro operaciones críticas:
+
+| Operación del proceso nocturno | Tamaño de la entrada ($n$) en volumen real | Estrategia actual del SITVM | Complejidad actual | Diagnóstico de cuello de botella |
+| :--- | :--- | :--- | :---: | :--- |
+| **Op. 1 — Deduplicación de validaciones** | $n \approx 1.400.000$ validaciones/noche (4 % a 9 % repetidas por reenvío de lotes de 2.100 validadores) | Comparación secuencial de cada validación contra todas las ya aceptadas | $\Theta(n^2)$ | Cerca de $9,8 \times 10^{11}$ comparaciones/noche; consume horas de CPU que se reducen a $\Theta(n)$ con una tabla hash sobre `(id_validador, id_tarjeta, marca_tiempo)`. |
+| **Op. 2 — Ordenamiento por tarjeta y hora** | $n \approx 1.300.000$ validaciones únicas/noche | Ordenamiento por inserción (*Insertion Sort*) sobre el archivo completo | $\Theta(n^2)$ | En el caso promedio/peor realiza $\approx 8,4 \times 10^{11}$ desplazamientos por noche; sustituible por *Merge Sort* en $\Theta(n \log n)$. |
+| **Op. 3 — Detección de franjas de congestión** *(Abordada en esta Segunda Parte)* | $n \approx 6.840$ intervalos/mes o $n \approx 166.000$ intervalos en el histórico de 2 años, para cada una de las $E = 80$ estaciones | Evaluación por fuerza bruta de todos los pares de intervalos $(i, j)$ posibles | $\Theta(n^2)$ por estación ($\Theta(E \cdot n^2)$ total) | En el histórico de 2 años evalúa $\approx 1,38 \times 10^{10}$ intervalos por estación ($\approx 1,1 \times 10^{12}$ en las 80 estaciones); **no termina dentro de la ventana nocturna**. |
+| **Op. 4 — Liquidación del tope tarifario** *(Abordada en la Primera Parte — Lab 4)* | $N \approx 950.000$ tarjetas activas/mes, cada una con un periodo de $d \in \lbrace 28, 29, 30, 31 \rbrace$ días ($m \le d$ días con viaje) | Búsqueda recursiva exhaustiva de combinaciones de pases + regla voraz simplificada de respaldo | $\Theta(d + r^m)$ con $r \approx 2,0066$ (exhaustiva) / $\Theta(d)$ (regla inexacta) | La búsqueda exhaustiva explota exponencialmente ($\approx 284$ días de CPU para el 15 % de usuarios frecuentes), y la regla simplificada **viola la exactitud financiera** cobrando de más a >31 % de las tarjetas. |
+
+### 9.2 Entradas, salida, unidades y límites de la Operación 3 (Detección de las franjas de congestión)
+Planeación de la Operación necesita identificar, para cada una de las 80 estaciones de metro y cable, el tramo de intervalos consecutivos de 5 minutos en el que se acumuló el mayor número neto de pasajeros en la plataforma, con el fin de decidir dónde y cuándo reforzar la frecuencia de trenes.
+
+| Elemento | Descripción técnica | Unidades y límites informados por el caso |
+| :--- | :--- | :--- |
+| **Entrada principal** (`saldos`) | Lista de enteros `list[int]` de longitud $n$, donde cada posición registra el saldo neto de pasajeros en la plataforma durante un intervalo de 5 minutos (pasajeros que entraron por torniquetes menos pasajeros evacuados por los trenes; puede ser positivo, cero o negativo). | `saldos[k]` $\in \mathbb{Z}$ (pasajeros netos por intervalo de 5 min).<br>• 1 día: $228$ intervalos (04:30 a 23:30).<br>• 1 mes (30 días): $n = 6.840$ intervalos/estación.<br>• Histórico de 2 años: $n \approx 166.000$ intervalos/estación ($730 \times 228 = 166.440$). |
+| **Volumen de la red** | Cantidad de estaciones de metro y cable que deben analizarse en el proceso nocturno. | **80 estaciones** en toda la red del SITVM. |
+| **Salida** `(inicio, fin, acumulacion_maxima)` | Tupla de tres enteros `(int, int, int)` con el índice inicial `inicio`, el índice final `fin` (ambos inclusivos, $0 \le \text{inicio} \le \text{fin} < n$) y la suma máxima acumulada $\sum_{k=\text{inicio}}^{\text{fin}} \text{saldos}[k]$. | Índices en $[0, n-1]$ y acumulación máxima en número de pasajeros. |
+
+### 9.3 Restricciones y supuestos específicos de la Operación 3
+1. **Exactitud estricta del tramo:** el tramo de congestión reportado para cada estación debe ser el de mayor acumulación neta de toda la serie histórica, no una aproximación ni un muestreo parcial de estaciones.
+2. **Inmutabilidad y trazabilidad:** la serie original `saldos` de cada estación no puede modificarse durante el cálculo.
+3. **Cumplimiento de la ventana operativa:** el procesamiento de las 80 estaciones sobre el histórico de dos años debe ejecutarse dentro de la ventana nocturna de 4 horas en el mismo servidor dedicado de **500 W (0,5 kW)** y un solo hilo.
+4. **Costo energético actual (línea base de la Operación 3):** como se demuestra en las mediciones de la Sección 12, evaluar los dos años de historia ($n = 166.000$) con la estrategia actual de fuerza bruta $\Theta(n^2)$ tarda **455,54 segundos (7,59 min) por estación**, lo que para las **80 estaciones** requiere **36.443,3 segundos (10,12 horas)**. A una potencia de $0,5\text{ kW}$, cada corrida completa de la Operación 3 consume **5,0616 kWh**, lo que proyectado a un año de operación diaria (365 noches) representa una línea base de **1.847,47 kWh/año**.
+
+---
+
+## 10. Diseño de la solución — Operación 3 (Detección de las franjas de congestión)
+
+### 10.1 Estructuras de datos seleccionadas
+Se utilizan arreglos dinámicos contiguos (`list[int]` en Python) indexados cronológicamente por intervalo de 5 minutos ($0 \le k < n$). Esto permite calcular puntos medios y recorrer sufijos/prefijos en tiempo $\Theta(1)$ por acceso en la estrategia de dividir y vencer, y mantener los datos en líneas contiguas de caché L1/L2 durante el barrido secuencial. En la estrategia de programación dinámica lineal (Kadane), el estado óptimo previo se conserva en variables escalares simples, reduciendo la memoria auxiliar a $\Theta(1)$.
+
+### 10.2 Estrategias algorítmicas diseñadas para la Operación 3
+El problema de encontrar el tramo de intervalos consecutivos $[i^*, j^*]$ que maximiza $\sum_{k=i^*}^{j^*} \text{saldos}[k]$ corresponde al problema clásico del **subarreglo máximo contiguo**. Diseñamos y comparamos tres estrategias:
+
+#### Estrategia 3A — Búsqueda exhaustiva por fuerza bruta (`franja_fuerza_bruta`, Proceso actual)
+Recorre con un ciclo externo cada índice inicial $i \in [0, n-1]$ y con un ciclo interno cada índice final $j \in [i, n-1]$, acumulando la suma del tramo `acumulado += saldos[j]` en $O(1)$ y actualizando el mejor tramo visto. Evalúa exactamente $\frac{n(n+1)}{2}$ tramos, con complejidad temporal $\Theta(n^2)$ y espacial $\Theta(1)$.
+
+#### Estrategia 3B — Paradigma de Dividir y Vencer (`franja_divide_y_venceras`)
+- **Por qué el problema admite dividir y vencer:** al dividir la serie `saldos[inicio..fin]` en su punto central $\text{medio} = \lfloor(\text{inicio} + \text{fin}) / 2\rfloor$, cualquier tramo contiguo $[i, j]$ pertenece necesariamente a uno de tres casos:
+  1. Está contenido **completamente en la mitad izquierda** ($\text{inicio} \le i \le j \le \text{medio}$): subproblema recursivo de tamaño $n/2$.
+  2. Está contenido **completamente en la mitad derecha** ($\text{medio} + 1 \le i \le j \le \text{fin}$): subproblema recursivo de tamaño $n/2$.
+  3. **Cruza la frontera central** ($\text{inicio} \le i \le \text{medio} < j \le \text{fin}$): como todo tramo que cruza el centro es la unión de un sufijo de la mitad izquierda que termina en `medio` y un prefijo de la mitad derecha que empieza en `medio + 1`, su suma máxima se halla de forma exacta realizando un barrido lineal desde `medio` hacia `inicio` en $\Theta(n/2)$ y otro desde `medio + 1` hacia `fin` en $\Theta(n/2)$, sumando ambos máximos en $\Theta(n)$.
+- **Recurrencia y reducción del consumo energético:** la ecuación de recurrencia es $T(n) = 2T(n/2) + \Theta(n)$. Por el Caso 2 del Teorema Maestro ($a = 2, b = 2, f(n) = \Theta(n) = \Theta(n^{\log_2 2})$), la complejidad baja de $\Theta(n^2)$ a **$\Theta(n \log n)$**, reduciendo en $n = 166.000$ las operaciones por estación de $\approx 1,38 \times 10^{10}$ a $\approx 3,06 \times 10^6$ (más de 4.500 veces menos trabajo de procesador y consumo eléctrico).
+
+```text
+ALGORITMO FranjaDivideYVenceras(saldos, inicio, fin)
+    Si inicio == fin entonces:
+        Retornar (inicio, fin, saldos[inicio])          // Caso base: 1 intervalo
+    medio <- (inicio + fin) // 2
+    izq  <- FranjaDivideYVenceras(saldos, inicio, medio)
+    der  <- FranjaDivideYVenceras(saldos, medio + 1, fin)
+    cruz <- FranjaCruzada(saldos, inicio, medio, fin)   // Dos barridos lineales desde medio
+    Retornar el tramo con mayor suma entre (izq, cruz, der)
+```
+
+#### Estrategia 3C — Programación dinámica lineal / Algoritmo de Kadane (`franja_programacion_dinamica`)
+- **Por qué el problema admite programación dinámica en $\Theta(n)$:** definimos el estado $M(j)$ como la máxima acumulación posible de un tramo contiguo que **termina exactamente en el intervalo $j$**.
+  - **Subestructura óptima:** el mejor tramo que termina en $j$ solo tiene dos opciones: extender el mejor tramo que terminaba en $j - 1$ sumándole `saldos[j]` (si $M(j - 1) \ge 0$), o descartar el acumulado previo e iniciar un tramo nuevo en $j$ (si $M(j - 1) < 0$, ya que arrastrar un saldo neto negativo disminuiría la suma futura):
+
+$$
+M(j) = \max\big(\text{saldos}[j],\ M(j - 1) + \text{saldos}[j]\big), \quad \text{con caso base } M(0) = \text{saldos}[0]
+$$
+
+  - El óptimo global de toda la serie es $\max_{0 \le j < n} M(j)$. Como $M(j)$ depende únicamente de $M(j - 1)$, basta un solo recorrido de izquierda a derecha en tiempo **$\Theta(n)$** y espacio auxiliar **$\Theta(1)$**, reduciendo el tiempo de las 80 estaciones de **10,12 horas a 0,811 segundos**.
+
+```text
+ALGORITMO FranjaKadanePD(saldos[0..n-1])
+    mejor_inicio <- 0; mejor_fin <- 0; mejor_suma <- saldos[0]
+    inicio_actual <- 0; suma_actual <- saldos[0]
+    Para j <- 1 hasta n - 1 hacer:
+        Si suma_actual + saldos[j] >= saldos[j] entonces:
+            suma_actual <- suma_actual + saldos[j]
+        Si no:
+            suma_actual <- saldos[j]
+            inicio_actual <- j
+        Si suma_actual > mejor_suma entonces:
+            mejor_suma <- suma_actual
+            mejor_inicio <- inicio_actual
+            mejor_fin <- j
+    Retornar (mejor_inicio, mejor_fin, mejor_suma)
+```
+
+### 10.3 Ejemplo resuelto a mano paso a paso (Op. 3, $n = 8$ intervalos)
+Para la serie de 8 intervalos (40 minutos en plataforma) `saldos = [-15, 40, -10, 35, -50, 20, 45, -25]`:
+
+| Intervalo $j$ | Saldo $\text{saldos}[j]$ | Decisión en $j$: $\max(\text{saldos}[j], M(j-1) + \text{saldos}[j])$ | Estado $M(j)$ (`suma_actual`) | Tramo activo $[I(j)..j]$ | Óptimo global hasta $j$ (`mejor_suma`, tramo) |
+| :---: | :---: | :--- | :---: | :---: | :---: |
+| **0** | $-15$ | Caso base | **$-15$** | $[0..0]$ | **$-15$** en $[0..0]$ |
+| **1** | $+40$ | $-15 + 40 = 25 < 40 \implies$ Reiniciar tramo en $j = 1$ | **$+40$** | $[1..1]$ | **$+40$** en $[1..1]$ |
+| **2** | $-10$ | $40 + (-10) = 30 \ge -10 \implies$ Extender tramo activo | **$+30$** | $[1..2]$ | **$+40$** en $[1..1]$ |
+| **3** | $+35$ | $30 + 35 = 65 \ge 35 \implies$ Extender tramo activo | **$+65$** | $[1..3]$ | **$+65$** en $[1..3]$ |
+| **4** | $-50$ | $65 + (-50) = 15 \ge -50 \implies$ Extender (aún aporta $+15$) | **$+15$** | $[1..4]$ | **$+65$** en $[1..3]$ |
+| **5** | $+20$ | $15 + 20 = 35 \ge 20 \implies$ Extender tramo activo | **$+35$** | $[1..5]$ | **$+65$** en $[1..3]$ |
+| **6** | $+45$ | $35 + 45 = 80 \ge 45 \implies$ Extender tramo activo | **$+80$** | $[1..6]$ | **$+80$** en $[1..6]$ |
+| **7** | $-25$ | $80 + (-25) = 55 \ge -25 \implies$ Extender tramo activo | **$+55$** | $[1..7]$ | **$+80$** en $[1..6]$ |
+
+- **Verificación por Dividir y Vencer ($\text{medio} = 3$):** la mitad izquierda $[0..3]$ tiene máximo $65$ en $[1..3]$; la mitad derecha $[4..7]$ tiene máximo $65$ en $[5..6]$; y el tramo cruzado toma el mejor sufijo izquierdo $[1..3]$ (suma $65$) más el mejor prefijo derecho $[4..6]$ (suma $-50 + 20 + 45 = 15$), dando $65 + 15 =$ **80 pasajeros** entre los intervalos `1` y `6` (`(1, 6, 80)`), idéntico a Kadane y Fuerza Bruta.
+
+---
+
+## 11. Implementación — Operación 3 (`src/franjas_congestion/`)
+
+Siguiendo la misma arquitectura modular de `src/tope_tarifario/`, la Operación 3 se implementó en `src/franjas_congestion/`:
+- [`src/franjas_congestion/fuerza_bruta.py`](src/franjas_congestion/fuerza_bruta.py): implementa `franja_fuerza_bruta` y `franja_fuerza_bruta_conteo` ($\Theta(n^2)$).
+- [`src/franjas_congestion/divide_y_venceras.py`](src/franjas_congestion/divide_y_venceras.py): implementa `franja_divide_y_venceras`, `_franja_cruzada` y `franja_divide_y_venceras_conteo` ($\Theta(n \log n)$).
+- [`src/franjas_congestion/kadane.py`](src/franjas_congestion/kadane.py): implementa `franja_programacion_dinamica` y `franja_programacion_dinamica_conteo` ($\Theta(n)$ tiempo, $\Theta(1)$ espacio).
+- [`src/franjas_congestion/datos.py`](src/franjas_congestion/datos.py): generador sintético reproducible (`semilla = 2026`) que modela los 228 intervalos diarios (04:30 a 23:30) con picos de mañana y tarde y valles de evacuación.
+- [`src/franjas_congestion/pruebas.py`](src/franjas_congestion/pruebas.py): suite de verificación con `assert` (traza manual, series de 1 elemento, todas negativas, todas positivas, cruce central, inmutabilidad y 100 series aleatorias).
+- [`src/franjas_congestion/medicion.py`](src/franjas_congestion/medicion.py): banco experimental hasta $n = 166.000$ intervalos y generación de gráficas en `graficas/franjas_congestion/`.
+
+---
+
+## 12. Evaluación del desempeño — Operación 3
+
+### 12.1 Complejidad temporal y espacial de las estrategias de la Operación 3
+
+| Estrategia | Complejidad temporal | Complejidad espacial auxiliar | Justificación analítica |
+| :--- | :---: | :---: | :--- |
+| **Fuerza bruta actual (`franja_fuerza_bruta`)** | $\Theta(n^2)$ | $\Theta(1)$ | Dos ciclos anidados que evalúan $\sum_{i=0}^{n-1}(n - i) = \frac{n(n+1)}{2} = \frac{1}{2}n^2 + \frac{1}{2}n$ pares $(i, j)$ usando variables escalares. |
+| **Dividir y vencer (`franja_divide_y_venceras`)** | $\Theta(n \log n)$ | $\Theta(\log n)$ | Divide en $a = 2$ mitades de tamaño $n/2$ y combina con dos barridos lineales desde el centro en $\Theta(n)$: $T(n) = 2T(n/2) + \Theta(n) \implies \Theta(n \log n)$ (Caso 2 del Teorema Maestro). La pila recursiva alcanza profundidad $\lfloor\log_2 n\rfloor + 1$. |
+| **Programación dinámica — Kadane (`franja_programacion_dinamica`)** | $\Theta(n)$ | $\Theta(1)$ | Un único recorrido `for j in range(1, n)` con 1 suma y 2 comparaciones por intervalo ($n$ evaluaciones elementales) y 5 variables escalares en memoria. |
+
+### 12.2 Mediciones experimentales y gráficas de la Operación 3
+
+#### Resultados conjuntos con Fuerza Bruta ($n = 100$ a $4.000$ intervalos de 5 minutos)
+
+| Intervalos $n$ | Tiempo Fuerza Bruta (ms) | Tiempo Dividir y Vencer (ms) | Tiempo Prog. Dinámica Kadane (ms) | Operaciones Fuerza Bruta $\frac{n(n+1)}{2}$ | Operaciones Dividir y Vencer | Operaciones Kadane PD |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **100** | 0,1296 | 0,0657 | 0,0059 | 5.050 | 772 | 100 |
+| **250** | 0,9131 | 0,1544 | 0,0112 | 31.375 | 2.244 | 250 |
+| **500** | 3,8580 | 0,3858 | 0,0234 | 125.250 | 4.988 | 500 |
+| **1.000** | 16,0942 | 0,8258 | 0,0499 | 500.500 | 10.976 | 1.000 |
+| **2.000** | 67,3174 | 1,6290 | 0,1029 | 2.001.000 | 23.952 | 2.000 |
+| **4.000** | 264,5035 | 3,4462 | 0,2088 | 8.002.000 | 51.904 | 4.000 |
+
+#### Resultados en tamaños grandes hasta el histórico real de 2 años ($n = 5.000$ a $166.000$ intervalos)
+
+| Intervalos $n$ | Tiempo Dividir y Vencer (ms) | Tiempo Prog. Dinámica Kadane (ms) | Operaciones Dividir y Vencer | Operaciones Kadane PD | Ventaja de velocidad (Kadane vs. DyV) |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| **5.000** | 4,3969 | 0,2635 | 66.808 | 5.000 | 16,7x más rápido |
+| **10.000** | 8,8589 | 0,5126 | 143.616 | 10.000 | 17,3x más rápido |
+| **20.000** | 19,3798 | 1,0495 | 307.232 | 20.000 | 18,5x más rápido |
+| **40.000** | 39,6983 | 2,0408 | 654.464 | 40.000 | 19,5x más rápido |
+| **80.000** | 95,2980 | 4,6077 | 1.388.928 | 80.000 | 20,7x más rápido |
+| **166.000** | 206,9728 | 10,1377 | 3.057.856 | 166.000 | **20,4x más rápido** |
+
+![Tiempo medio frente al tamaño n — Operación 3](graficas/franjas_congestion/tiempo_vs_n.png)
+
+![Operaciones elementales frente al tamaño n — Operación 3](graficas/franjas_congestion/operaciones_vs_n.png)
+
+### 12.3 Contraste entre lo medido y la complejidad teórica esperada (Operación 3)
+
+| Pareja $(n \to 2n)$ | Estrategia | Multiplicador de operaciones | Multiplicador de tiempo | Esperado por la teoría |
+| :---: | :--- | :---: | :---: | :--- |
+| **$2.000 \to 4.000$** | Fuerza bruta (`franja_fuerza_bruta`) | **4,00x** ($2.001.000 \to 8.002.000$) | **3,93x** ($67,32 \to 264,50\text{ ms}$) | $\Theta(n^2) \implies 4,00\text{x}$ |
+| **$2.000 \to 4.000$** | Dividir y vencer (`franja_divide_y_venceras`) | **2,17x** ($23.952 \to 51.904$) | **2,12x** ($1,63 \to 3,45\text{ ms}$) | $\Theta(n \log n) \implies 2 \cdot \frac{\log_2 4000}{\log_2 2000} \approx 2,18\text{x}$ |
+| **$2.000 \to 4.000$** | Prog. Dinámica Kadane (`franja_programacion_dinamica`) | **2,00x** ($2.000 \to 4.000$) | **2,03x** ($0,1029 \to 0,2088\text{ ms}$) | $\Theta(n) \implies 2,00\text{x}$ |
+| **$40.000 \to 80.000$** | Dividir y vencer (`franja_divide_y_venceras`) | **2,12x** ($654.464 \to 1.388.928$) | **2,40x** ($39,70 \to 95,30\text{ ms}$) | $\Theta(n \log n) \implies 2,13\text{x}$ |
+| **$40.000 \to 80.000$** | Prog. Dinámica Kadane (`franja_programacion_dinamica`) | **2,00x** ($40.000 \to 80.000$) | **2,26x** ($2,04 \to 4,61\text{ ms}$) | $\Theta(n) \implies 2,00\text{x}$ |
+
+### 12.4 Extrapolación al histórico de 2 años en las 80 estaciones del SITVM
+Para el volumen real requerido por Planeación ($n = 166.000$ intervalos por estación en las $E = 80$ estaciones):
+1. **Fuerza bruta actual ($\Theta(n^2)$):** extrapolando cuadráticamente desde $n = 4.000$ ($0,2645035\text{ s}$) por el factor $(166.000 / 4.000)^2 = 1.722,25$, una estación tarda **$455,54\text{ s}$ (7,59 min)** y las **80 estaciones** tardan **$36.443,3\text{ s} \approx \mathbf{10,12\text{ horas}}$**, desbordando más de 2,5 veces la ventana nocturna de 4 horas.
+2. **Dividir y vencer ($\Theta(n \log n)$):** medido directamente en $n = 166.000$, tarda **$206,97\text{ ms}$ por estación** y **$16,558\text{ segundos}$ para las 80 estaciones** (0,115 % de la ventana de 4 horas).
+3. **Programación dinámica — Kadane ($\Theta(n)$):** medido directamente en $n = 166.000$, tarda **$10,14\text{ ms}$ por estación** y apenas **$0,811\text{ segundos}$ para las 80 estaciones** (0,0056 % de la ventana de 4 horas; más de **44.900 veces más rápido** que la fuerza bruta).
+
+---
+
+## 13. Análisis comparativo integral y recomendación técnica para el SITVM
+
+| Operación y Estrategia | Complejidad temporal | Complejidad espacial | Exactitud | Tiempo en volumen real del SITVM | ¿Cumple ventana de 4 h? | Decisión técnica |
+| :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| **Op. 4 — Búsqueda exhaustiva (`costo_exhaustivo`)** | $\Theta(d + 2,0066^m)$ | $\Theta(d)$ | 100 % exacta | ~6.821,7 h (~284 días en 15 % tarjetas) | No | Descartada por explosión exponencial. |
+| **Op. 4 — Regla simplificada (`costo_regla_actual`)** | $\Theta(d)$ | $\Theta(1)$ | **Inexacta** (sobrecobra a >31 % tarjetas) | 4,58 s (950.000 tarjetas) | Sí, pero ilegal | Descartada por violar exactitud financiera. |
+| **Op. 4 — Prog. Dinámica (`costo_minimo`)** | **$\Theta(d)$** | **$\Theta(d)$** | **100 % exacta** | **7,73 s** (950.000 tarjetas) | **Sí (0,054 %)** | **Seleccionada para producción (Op. 4).** |
+| **Op. 3 — Fuerza bruta (`franja_fuerza_bruta`)** | $\Theta(n^2)$ | $\Theta(1)$ | 100 % exacta | 36.443,3 s (**10,12 h** en 80 estaciones) | No (253 %) | Descartada por crecimiento cuadrático. |
+| **Op. 3 — Dividir y vencer (`franja_divide_y_venceras`)** | $\Theta(n \log n)$ | $\Theta(\log n)$ | 100 % exacta | 16,56 s (80 estaciones, $n=166.000$) | Sí (0,115 %) | Respaldo de verificación y eventual paralelización. |
+| **Op. 3 — Prog. Dinámica Kadane (`franja_programacion_dinamica`)** | **$\Theta(n)$** | **$\Theta(1)$** | **100 % exacta** | **0,811 s** (80 estaciones, $n=166.000$) | **Sí (0,0056 %)** | **Seleccionada para producción (Op. 3).** |
+
+**Justificación de la selección:** al adoptar **Programación Dinámica por tabulación** en la Operación 4 y el **Algoritmo lineal de Kadane** en la Operación 3, ambas operaciones críticas se ejecutan de forma 100 % exacta sobre el volumen total del SITVM en un tiempo combinado de **$7,73\text{ s} + 0,811\text{ s} = 8,54\text{ segundos}$**, utilizando menos del **0,06 %** de la ventana nocturna en el servidor actual de 500 W.
+
+---
+
+## 14. Implicaciones éticas, sociales, normativas y ambientales (Complemento del Caso 1)
+
+### 14.1 Consolidado de consumo energético anual (Proceso actual frente a solución propuesta)
+Complementando la Tabla 6.1 de la Operación 4 con las 365 corridas nocturnas al año de la Operación 3 sobre las 80 estaciones en el servidor de **500 W (0,5 kW)**:
+
+| Operación / Sistema evaluado | Tiempo por corrida (volumen real) | Energía por corrida (kWh) | Corridas al año | Consumo anual (kWh/año) | Ahorro energético anual |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| **Op. 3 — Fuerza bruta actual $\Theta(n^2)$** | 36.443,3 s (10,123 h) | 5,0616 kWh | 365 noches | **1.847,47 kWh/año** | Línea base actual (Op. 3) |
+| **Op. 3 — Dividir y vencer $\Theta(n \log n)$** | 16,558 s (0,00460 h) | 0,002300 kWh | 365 noches | **0,8394 kWh/año** | Ahorra 1.846,63 kWh/año (99,95 %) |
+| **Op. 3 — Prog. Dinámica Kadane $\Theta(n)$ [Propuesta]** | **0,811 s** (0,000225 h) | **0,000113 kWh** | 365 noches | **0,0411 kWh/año** | Ahorra **1.847,43 kWh/año (99,998 %)** |
+| **Op. 4 — Proceso híbrido actual vs. PD Tabulación [Propuesta]** | > 4,00 h $\to$ **7,73 s** | > 2,00 kWh $\to$ **0,00107 kWh** | 12 cierres | **> 24,00 kWh/año** $\to$ **0,01289 kWh/año** | Ahorra **> 23,987 kWh/año (> 99,94 %)** |
+| **TOTAL CONSOLIDADO (Op. 3 + Op. 4)** | **> 14,12 h** $\to$ **8,54 s** | **> 7,06 kWh** $\to$ **0,00119 kWh** | **365d + 12m** | **1.871,47 kWh/año** $\to$ **0,0540 kWh/año** | **Ahorro total: 1.871,42 kWh/año (99,997 %)** |
+
+Con el factor de emisión de la red eléctrica colombiana (UPME / XM: $\approx 0,164\text{ kg CO}_2\text{e/kWh}$), reducir el consumo de **1.871,47 kWh/año a 0,0540 kWh/año** evita emitir **$\approx 306,9\text{ kg de CO}_2\text{e}$ anuales** y evita reemplazar prematuramente el servidor actual.
+
+### 14.2 Consecuencias sobre las personas (Pregunta de impacto 1 del Caso 1)
+1. **¿Quién asume el costo de un doble cobro o de una mala liquidación del tope?** Lo asume directamente **el pasajero**, con un impacto social regresivo: los usuarios que viajan más días al mes (combinando alimentador, cable y metro) y quienes tienen perfiles diferenciales (estudiantes, adultos mayores y personas con discapacidad) pertenecen en su mayoría a los hogares de menores ingresos. Cuando la regla simplificada actual sobrecobra en promedio **8.885 pesos** al **31,40 % de las tarjetas** (hasta **28.500 pesos** en un mes), o cuando se cobra dos veces un viaje de $3.900$ pesos, se afecta el presupuesto básico de transporte del trabajador.
+2. **Consecuencias de que el proceso llegue tarde (> 8 horas):**
+   - Al no terminar antes de las 04:00, los validadores de los buses abren a las 04:30 sin la lista actualizada de tarjetas bloqueadas por hurto o extravío, y **el ciudadano víctima de robo pierde el saldo** que terceros utilicen durante un día más.
+   - El retraso de semanas en devolver los saldos del tope tarifario retiene dinero del usuario.
+   - Al no poder correr la Operación 3 sobre las 80 estaciones sino sobre una muestra, Planeación subestima la congestión en estaciones periféricas, deteriorando la calidad del viaje de sus usuarios.
+3. **Mitigación desde el diseño algorítmico:** `costo_minimo` ($\Theta(d)$) garantiza devoluciones exactas al peso en 7,73 s en la misma noche de cierre, y `franja_programacion_dinamica` ($\Theta(n)$) analiza las 80 estaciones en 0,811 s sin excluir ninguna zona de la red.
+
+### 14.3 Marco normativo, regulatorio y buenas prácticas con sus fuentes (Pregunta de impacto 2 del Caso 1)
+
+| Norma / Buena Práctica y Fuente Oficial | Condicionamiento sobre el caso del SITVM | Cómo la respeta nuestro diseño algorítmico |
+| :--- | :--- | :--- |
+| **1. Ley Estatutaria 1581 de 2012 y Decreto 1377 de 2013** *(Protección de Datos Personales / Habeas Data en Colombia)* — Fuente: *Congreso de la República, Diario Oficial No. 48.587 de 2012*. | Los registros de una tarjeta personalizada (`id_tarjeta`, `id_estacion`, `marca_tiempo`) revelan la ubicación y rutina de desplazamiento de una persona, exigiendo **minimización de datos, finalidad y circulación restringida**. | **Minimización y anonimización por diseño:** `costo_minimo(viajes_por_dia)` recibe únicamente el vector de conteos diarios `[v_1..v_d]` sin estaciones ni horas; y `franja_programacion_dinamica(saldos)` procesa saldos agregados anónimos por estación sin identificadores de tarjeta. |
+| **2. Ley 1480 de 2011 (Estatuto del Consumidor) y Ley 336 de 1996 (Estatuto Nacional de Transporte)** — Fuente: *Congreso de la República, arts. 3, 26 y 59 de la Ley 1480/2011*. | Obliga a cobrar exactamente la tarifa pública regulada, prohíbe cobros superiores al tope anunciado y exige devolución exacta y auditable de saldos a favor del usuario. | `costo_minimo` y `liquidar_tope` garantizan optimalidad matemática exacta (0 pesos de sobrecobro), y `reconstruir_compras` entrega el desglose verificable de pases aplicados ante cualquier PQRS. |
+| **3. Ley 842 de 2003 (Código de Ética de la Ingeniería en Colombia — COPNIA) y Código de Ética ACM/IEEE** — Fuente: *Diario Oficial No. 45.340, arts. 31 y 33; ACM Code of Ethics 1.1 y 2.9*. | Exige proteger el bienestar público, verificar rigurosamente la corrección del software antes de ponerlo en producción y optimizar el uso de recursos y energía. | Ambas operaciones cuentan con pruebas automatizadas (`pruebas.py`) que verifican igualdad exacta frente a la fuerza bruta en 100 instancias aleatorias y casos borde antes de su despliegue. |
+| **4. ISO/IEC 25010:2023 (Calidad de Software) e ISO/IEC 27001 (Integridad y Trazabilidad)** — Fuente: *International Organization for Standardization (ISO)*. | Exige exactitud funcional, eficiencia temporal dentro de la ventana de lote e **inmutabilidad de los registros originales** para conservar la trazabilidad ante auditorías y reclamaciones. | Ninguna función modifica las listas de entrada `viajes_por_dia` ni `saldos` (comprobado con `assert serie == copia`), preservando intactas las bitácoras originales de validación. |
+
+### 14.4 Sostenibilidad ante el crecimiento del 30 % y tercera línea de cable (Pregunta de impacto 3 del Caso 1)
+Si entra en operación una tercera línea de cable y las validaciones diarias y tarjetas activas crecen un **30 %** (de $1.400.000$ a **$1.820.000$ validaciones/día**, de $950.000$ a **$1.235.000$ tarjetas activas/mes**, y hasta un 30 % más de estaciones analizadas en el histórico de 2 años, pasando de 80 a **104 estaciones** con $n = 166.000$ intervalos cada una):
+- **En la Operación 4 (`costo_minimo`, $\Theta(d)$):** el número de días del mes ($d \in \lbrace 28..31 \rbrace$) es constante y el tiempo escala linealmente con las tarjetas ($\times 1,30$), pasando de **$7,73\text{ s}$ a $10,05\text{ segundos}$** ($0,00140\text{ kWh}$ por cierre; $0,070\%$ de la ventana de 4 horas).
+- **En la Operación 3 (`franja_programacion_dinamica`, $\Theta(n)$):** el número de intervalos de 5 minutos en dos años ($n = 166.000$) es fijo; mayores afluencias por intervalo solo cambian la magnitud del entero sumado. Incluso si el número de estaciones aumentara un 30 % (a 104 estaciones), el tiempo crece linealmente ($\times 1,30$) de **$0,811\text{ s}$ a $1,054\text{ segundos}$** ($0,000146\text{ kWh}$ por noche; y con Dividir y Vencer pasaría de $16,56\text{ s}$ a $21,53\text{ s}$).
+- **Contraste con el proceso actual $\Theta(n^2)$:** en los algoritmos cuadráticos actuales del SITVM, un crecimiento del 30 % en los registros multiplica el tiempo por $1,30^2 = \mathbf{1,69}$, llevando el lote nocturno de >8 horas a **>13,5 horas**. En cambio, nuestra solución combinada pasa de **$8,54\text{ s}$ a $11,10\text{ segundos}$**, absorbiendo la tercera línea de cable sin invertir en nuevos servidores.
+
+---
+
+## 15. Conclusiones generales del Proyecto Final y guía de reproducción de la Operación 3
+
+### 15.1 Conclusiones integrales y recomendaciones futuras
+1. **Cumplimiento holgado de la ventana nocturna con exactitud del 100 %:** el rediseño de la Operación 4 con Programación Dinámica ($\Theta(d)$, **7,73 s**) y de la Operación 3 con Dividir y Vencer ($\Theta(n \log n)$, **16,56 s**) y Programación Dinámica de Kadane ($\Theta(n)$, **0,811 s**) reduce el tiempo conjunto de más de 14 horas a **8,54 segundos**, con un ahorro energético del **99,997 %** (**1.871,42 kWh/año ahorrados**).
+2. **Lección aprendida entre paradigmas:** en la Operación 3, aunque Dividir y Vencer logra una mejora drástica frente a Fuerza Bruta (de 10,12 horas a 16,56 segundos), el algoritmo de Kadane aprovecha la actualización inductiva en $O(1)$ entre intervalos consecutivos para eliminar el factor $\log_2 n$ y la pila recursiva, logrando una ventaja adicional de **20,4x en velocidad** y memoria auxiliar $\Theta(1)$.
+3. **Recomendación futura para las Operaciones 1 y 2:** completar la modernización del lote nocturno reemplazando la deduplicación cuadrática (Op. 1) por una **Tabla Hash** en $\Theta(n)$ sobre la clave `(id_validador, id_tarjeta, marca_tiempo)` y el ordenamiento por inserción (Op. 2) por **Merge Sort** en $\Theta(n \log n)$, con lo cual las cuatro operaciones nocturnas del SITVM terminarán en menos de 1 minuto.
+
+### 15.2 Comandos adicionales para ejecutar las pruebas y experimentos de la Operación 3
+
+Además de los comandos de la Sección 8 (para `src/tope_tarifario/`), ejecute desde la raíz del repositorio:
+
+#### En Windows (PowerShell)
+```powershell
+# 3. Ejecutar suite de pruebas de la Operación 3 (Franjas de congestión)
+python src/franjas_congestion/pruebas.py
+
+# 4. Ejecutar experimentos y generar gráficas en graficas/franjas_congestion/
+python src/franjas_congestion/medicion.py
+```
+
+#### En Linux / macOS
+```bash
+# 3. Ejecutar suite de pruebas de la Operación 3 (Franjas de congestión)
+python3 src/franjas_congestion/pruebas.py
+
+# 4. Ejecutar experimentos y generar gráficas en graficas/franjas_congestion/
+python3 src/franjas_congestion/medicion.py
+```
